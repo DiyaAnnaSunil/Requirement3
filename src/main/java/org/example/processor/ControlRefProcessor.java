@@ -23,7 +23,7 @@ public class ControlRefProcessor {
     private MongoTemplate mongoTemplate;
 
     public void fetchControlRefs(Exchange exchange) {
-        logger.debug("Fetching controlRef documents from MongoDB");
+        logger.debug("Fetching controlRef document from MongoDB");
         if (mongoTemplate == null) {
             logger.error("MongoTemplate is not injected");
             exchange.setProperty("controlRefMap", new HashMap<String, Date>());
@@ -31,55 +31,56 @@ public class ControlRefProcessor {
         }
 
         try {
-            Iterable<Document> controlRefDocs = mongoTemplate.getCollection("controlRef").find();
+            // Fetch single controlRef document with _id: "global"
+            Document controlRefDoc = mongoTemplate.getCollection("controlRef").find(new Document("_id", "global")).first();
             Map<String, Date> controlRefMap = new HashMap<>();
-            int count = 0;
 
-            for (Document doc : controlRefDocs) {
-                logger.debug("Processing controlRef document: {}", doc.toJson());
-                String itemId = doc.getString("_id");
-                String lastProcessTsStr = doc.getString("lastProcessTs");
-                if (itemId != null && lastProcessTsStr != null) {
+            if (controlRefDoc != null) {
+                logger.debug("Found controlRef document: {}", controlRefDoc.toJson());
+                String lastProcessTsStr = controlRefDoc.getString("lastProcessTs");
+                if (lastProcessTsStr != null) {
                     try {
                         Date lastProcessTs;
                         synchronized (FORMATTER) {
                             lastProcessTs = FORMATTER.parse(lastProcessTsStr);
                         }
-                        controlRefMap.put(itemId, lastProcessTs);
-                        logger.debug("Added controlRef entry: itemId={}, lastProcessTs={}", itemId, lastProcessTsStr);
-                        count++;
+                        controlRefMap.put("global", lastProcessTs);
+                        logger.debug("Added controlRef entry: lastProcessTs={}", lastProcessTsStr);
                     } catch (Exception e) {
-                        logger.warn("Invalid lastProcessTs format for item {}: {}", itemId, lastProcessTsStr, e);
+                        logger.warn("Invalid lastProcessTs format: {}", lastProcessTsStr, e);
                     }
                 } else {
-                    logger.warn("Invalid controlRef document: {}", doc.toJson());
+                    logger.warn("Invalid controlRef document, missing lastProcessTs: {}", controlRefDoc.toJson());
                 }
+            } else {
+                logger.info("No controlRef document found for _id: 'global', using empty map");
             }
 
             exchange.setProperty("controlRefMap", controlRefMap);
-            logger.info("Fetched {} controlRef documents", count);
+            logger.info("Fetched controlRefMap with {} entries", controlRefMap.size());
         } catch (Exception e) {
-            logger.error("Failed to fetch controlRef documents", e);
+            logger.error("Failed to fetch controlRef document", e);
             exchange.setProperty("controlRefMap", new HashMap<String, Date>());
         }
     }
 
     public void updateControlRef(Exchange exchange) {
-        String itemId = exchange.getProperty("itemId", String.class);
         String currentTs = exchange.getProperty("currentTs", String.class);
 
-        if (itemId == null || currentTs == null) {
-            logger.warn("Cannot update controlRef: itemId or currentTs is null");
+        if (currentTs == null) {
+            logger.warn("Cannot update controlRef: currentTs is null");
+            exchange.getIn().setBody(null);
             return;
         }
 
         try {
-            Document controlRefDoc = new Document("_id", itemId)
+            Document controlRefDoc = new Document("_id", "global")
                     .append("lastProcessTs", currentTs);
             exchange.getIn().setBody(controlRefDoc);
-            logger.info("Prepared controlRef update for itemId: {}, lastProcessTs: {}", itemId, currentTs);
+            logger.info("Prepared controlRef update: lastProcessTs={}", currentTs);
         } catch (Exception e) {
-            logger.error("Failed to prepare controlRef update for itemId: {}", itemId, e);
+            logger.error("Failed to prepare controlRef update", e);
+            exchange.getIn().setBody(null);
         }
     }
 }

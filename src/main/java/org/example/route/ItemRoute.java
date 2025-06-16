@@ -29,6 +29,7 @@ public class ItemRoute extends RouteBuilder {
                 .bean("itemProcessor", "setCurrentTimestamp")
                 .to("direct:fetchControlRef")
                 .to("direct:processItems")
+                .to("direct:updateControlRef")
                 .log(LoggingLevel.INFO, "File export completed");
 
         from("direct:fetchControlRef")
@@ -41,18 +42,36 @@ public class ItemRoute extends RouteBuilder {
                 .bean("itemProcessor", "prepareItemQuery")
                 .setHeader(MongoDbConstants.LIMIT, constant(Integer.parseInt(getContext().resolvePropertyPlaceholders("{{app.records.processLimit}}"))))
                 .to(mongoUri + "&collection={{app.item.collection}}&operation=findAll")
+                .process(exchange -> {
+                    Object body = exchange.getIn().getBody();
+                    logger.debug("Post-findAll body type: {}, value: {}",
+                            body != null ? body.getClass().getName() : "null", body);
+                    if (!(body instanceof java.util.List)) {
+                        logger.warn("Unexpected findAll result type: {}, converting to empty list",
+                                body != null ? body.getClass().getName() : "null");
+                        exchange.getIn().setBody(new java.util.ArrayList<>());
+                    }
+                })
                 .bean("itemProcessor", "filterValidItems")
                 .bean("itemProcessor", "logFetchedItems")
                 .split(body()).parallelProcessing()
                 .bean("itemProcessor", "enrichWithCategory")
                 .log(LoggingLevel.DEBUG, "Executing category query for item ${exchangeProperty.itemId} on ${header.CamelMongoDbDatabase}.${header.CamelMongoDbCollection}")
                 .to(mongoUri + "&collection={{app.category.collection}}&operation=findOneByQuery&outputType=Document")
+                .process(exchange -> {
+                    Object body = exchange.getIn().getBody();
+                    logger.debug("Post-findOneByQuery body type: {}, value: {}",
+                            body != null ? body.getClass().getName() : "null", body);
+                    if (body instanceof java.util.List) {
+                        logger.warn("Unexpected findOneByQuery result type: List, value: {}, setting to null", body);
+                        exchange.getIn().setBody(null);
+                    }
+                })
                 .bean("itemProcessor", "processCategoryQuery")
                 .bean("itemProcessor", "mapItemData")
                 .multicast().parallelProcessing()
                 .to("direct:writeTrendXml", "direct:writeReviewXml", "direct:writeStoreJson")
                 .end()
-                .to("direct:updateControlRef")
                 .end();
 
         from("direct:writeTrendXml")
@@ -112,10 +131,10 @@ public class ItemRoute extends RouteBuilder {
                 .choice()
                 .when(body().isNotNull())
                 .to(mongoUri + "&collection={{app.control.collection}}&operation=save")
-                .log(LoggingLevel.INFO, "controlRef updated for item: ${exchangeProperty.itemId}")
+                .log(LoggingLevel.INFO, "controlRef updated with lastProcessTs: ${exchangeProperty.currentTs}")
                 .endChoice()
                 .when(body().isNull())
-                .log(LoggingLevel.WARN, "Skipped controlRef update for item: ${exchangeProperty.itemId} (null body)")
+                .log(LoggingLevel.WARN, "Skipped controlRef update (null body)")
                 .endChoice();
     }
 }
