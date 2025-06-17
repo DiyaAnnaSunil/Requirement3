@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <TrendXml>
-    <availableStock>62</availableStock>
+    <availableStock>42</availableStock>
     <categoryId>cat2</categoryId>
     <categoryName>Audio Devices</categoryName>
-    <itemId>item9</itemId>
-    <sellingPrice>800</sellingPrice>
+    <itemId>item102</itemId>
+    <sellingPrice>2345</sellingPrice>
 </TrendXml>

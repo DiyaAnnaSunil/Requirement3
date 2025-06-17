@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ReviewXml>
+    <itemId>item102</itemId>
+    <reviews>
+        <reviewComment>stylish</reviewComment>
+        <reviewRating>5</reviewRating>
+    </reviews>
+    <reviews>
+        <reviewComment>value for money</reviewComment>
+        <reviewRating>4</reviewRating>
+    </reviews>
+    <reviews>
+        <reviewComment>durable</reviewComment>
+        <reviewRating>5</reviewRating>
+    </reviews>
+</ReviewXml>

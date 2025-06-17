@@ -49,7 +49,7 @@ public class ItemProcessor {
         }
 
         exchange.getIn().setBody(query);
-        logger.info("Prepared item query: {}", query.toJson()); // Enhanced logging
+        logger.info("Prepared item query: {}", query.toJson());
     }
 
     @SuppressWarnings("unchecked")
@@ -257,8 +257,7 @@ public class ItemProcessor {
             exchange.getIn().setBody(null);
             return;
         }
-        String timestamp = exchange.getProperty("currentTs", String.class).replaceAll("[^0-9]", "");
-        exchange.getIn().setHeader("CamelFileName", String.format("trend-%s-%s.xml", itemId, timestamp));
+        exchange.getIn().setHeader("CamelFileName", String.format("trend-%s.xml", itemId));
         exchange.getIn().setBody(trendXml);
         logger.debug("Prepared trend XML for item: {}", trendXml.getItemId());
     }
@@ -271,8 +270,7 @@ public class ItemProcessor {
             exchange.getIn().setBody(null);
             return;
         }
-        String timestamp = exchange.getProperty("currentTs", String.class).replaceAll("[^0-9]", "");
-        exchange.getIn().setHeader("CamelFileName", String.format("storefront-%s-%s.json", itemId, timestamp));
+        exchange.getIn().setHeader("CamelFileName", String.format("storefront-%s.json", itemId));
         exchange.getIn().setBody(storeJson);
         logger.debug("Prepared store JSON for item: {}", storeJson.get_id());
     }
@@ -285,8 +283,7 @@ public class ItemProcessor {
             exchange.getIn().setBody(null);
             return;
         }
-        String timestamp = exchange.getProperty("currentTs", String.class).replaceAll("[^0-9]", "");
-        exchange.getIn().setHeader("CamelFileName", String.format("review-%s-%s.xml", itemId, timestamp));
+        exchange.getIn().setHeader("CamelFileName", String.format("review-%s.xml", itemId));
         exchange.getIn().setBody(reviewXml);
         logger.debug("Prepared review XML for item: {}", reviewXml.getItemId());
     }
