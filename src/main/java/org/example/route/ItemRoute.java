@@ -8,9 +8,14 @@ import org.apache.camel.converter.jaxb.JaxbDataFormat;
 import org.example.model.ReviewXml;
 import org.example.model.StoreJson;
 import org.example.model.TrendXml;
+import org.example.processor.ItemProcessor;
+import org.bson.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+
+import java.nio.file.Files;
+import java.nio.file.Paths;
 
 @Component
 public class ItemRoute extends RouteBuilder {
@@ -18,123 +23,172 @@ public class ItemRoute extends RouteBuilder {
 
     @Override
     public void configure() throws Exception {
+        // Global exception handling
+        onException(Exception.class)
+                .handled(true)
+                .log(LoggingLevel.ERROR, "Route failed: ${exception.message}, stacktrace: ${exception.stacktrace}, itemId: ${exchangeProperty.itemId}, currentTs: ${exchangeProperty.currentTs}")
+                .stop();
+
         JaxbDataFormat trendXmlFormat = new JaxbDataFormat(TrendXml.class.getPackage().getName());
         JaxbDataFormat reviewXmlFormat = new JaxbDataFormat(ReviewXml.class.getPackage().getName());
         JacksonDataFormat jsonFormat = new JacksonDataFormat(StoreJson.class);
 
-        String mongoUri = "mongodb:mongoClient?database={{app.mongodb.database}}";
+        String mongoUri = "mongodb:mongoDbComponent?database={{app.mongodb.database}}";
 
-        from("quartz://fileExport?cron={{app.scheduler.cron}}")
+        from("quartz://fileExport?cron={{app.scheduler.cron}}&stateful=true")
                 .routeId("fileExport")
                 .bean("itemProcessor", "setCurrentTimestamp")
+                .log(LoggingLevel.DEBUG, "After setCurrentTimestamp, currentTs: ${exchangeProperty.currentTs}")
                 .to("direct:fetchControlRef")
+                .log(LoggingLevel.DEBUG, "Before processItems, currentTs: ${exchangeProperty.currentTs}")
                 .to("direct:processItems")
+                .log(LoggingLevel.DEBUG, "After processItems, currentTs: ${exchangeProperty.currentTs}")
                 .to("direct:updateControlRef")
                 .log(LoggingLevel.INFO, "File export completed");
 
         from("direct:fetchControlRef")
                 .routeId("fetchControlRef")
+                .log(LoggingLevel.DEBUG, "Before fetching controlRef")
+                .setBody(constant(new Document("_id", "global")))
+                .log(LoggingLevel.DEBUG, "Set query for controlRef: ${body}")
+                .to(mongoUri + "&collection={{app.control.collection}}&operation=findOneByQuery&outputType=Document")
                 .bean("controlRefProcessor", "fetchControlRefs")
                 .log(LoggingLevel.INFO, "Fetched controlRefMap with ${exchangeProperty.controlRefMap.size()} entries");
 
         from("direct:processItems")
                 .routeId("processItems")
+                .doTry()
                 .bean("itemProcessor", "prepareItemQuery")
-                .setHeader(MongoDbConstants.LIMIT, constant(Integer.parseInt(getContext().resolvePropertyPlaceholders("{{app.records.processLimit}}"))))
+                .log(LoggingLevel.DEBUG, "After prepareItemQuery, query: ${body}")
                 .to(mongoUri + "&collection={{app.item.collection}}&operation=findAll")
-                .process(exchange -> {
-                    Object body = exchange.getIn().getBody();
-                    logger.debug("Post-findAll body type: {}, value: {}",
-                            body != null ? body.getClass().getName() : "null", body);
-                    if (!(body instanceof java.util.List)) {
-                        logger.warn("Unexpected findAll result type: {}, converting to empty list",
-                                body != null ? body.getClass().getName() : "null");
-                        exchange.getIn().setBody(new java.util.ArrayList<>());
-                    }
-                })
+                .bean("itemProcessor", "validateItemList")
                 .bean("itemProcessor", "filterValidItems")
                 .bean("itemProcessor", "logFetchedItems")
-                .split(body()).parallelProcessing()
+                .choice()
+                .when(simple("${body} != null && ${body.size()} > 0"))
+                .split(body())
+                .log(LoggingLevel.DEBUG, "Processing item ${exchangeProperty.itemId}")
                 .bean("itemProcessor", "enrichWithCategory")
-                .log(LoggingLevel.DEBUG, "Executing category query for item ${exchangeProperty.itemId} on ${header.CamelMongoDbDatabase}.${header.CamelMongoDbCollection}")
+                .log(LoggingLevel.DEBUG, "Executing category query for item ${exchangeProperty.itemId}, query: ${body}")
                 .to(mongoUri + "&collection={{app.category.collection}}&operation=findOneByQuery&outputType=Document")
-                .process(exchange -> {
-                    Object body = exchange.getIn().getBody();
-                    logger.debug("Post-findOneByQuery body type: {}, value: {}",
-                            body != null ? body.getClass().getName() : "null", body);
-                    if (body instanceof java.util.List) {
-                        logger.warn("Unexpected findOneByQuery result type: List, value: {}, setting to null", body);
-                        exchange.getIn().setBody(null);
-                    }
-                })
+                .bean("itemProcessor", "validateCategoryResult")
                 .bean("itemProcessor", "processCategoryQuery")
                 .bean("itemProcessor", "mapItemData")
-                .multicast().parallelProcessing()
-                .to("direct:writeTrendXml", "direct:writeReviewXml", "direct:writeStoreJson")
+                .to("direct:writeTrendXml")
+                .to("direct:writeReviewXml")
+                .to("direct:writeStoreJson")
+                .log(LoggingLevel.DEBUG, "Completed file writes for item ${exchangeProperty.itemId}")
                 .end()
+                .log(LoggingLevel.DEBUG, "Completed processItems split, currentTs: ${exchangeProperty.currentTs}")
+                .endChoice()
+                .otherwise()
+                .log(LoggingLevel.INFO, "No valid items to process, skipping split")
+                .endChoice()
+                .endDoTry()
+                .doCatch(Exception.class)
+                .log(LoggingLevel.ERROR, "Failed processing items: ${exception.message}, currentTs: ${exchangeProperty.currentTs}")
                 .end();
 
         from("direct:writeTrendXml")
                 .routeId("writeTrendXml")
                 .bean("itemProcessor", "prepareTrendXml")
                 .choice()
-                .when(body().isNotNull())
+                .when(simple("${body} != null"))
                 .doTry()
                 .marshal(trendXmlFormat)
-                .to("file://{{app.output.item-trend-analyzer}}?fileExist=Override")
-                .log(LoggingLevel.INFO, "Overwrote trend XML: ${header.CamelFileName}")
-                .doCatch(Exception.class)
-                .log(LoggingLevel.ERROR, "Failed to overwrite trend XML: ${header.CamelFileName}, error: ${exception.message}")
-                .endDoTry()
+                .setHeader("OutputFolder", constant("trend"))
+                .process(exchange -> {
+                    String fileName = exchange.getIn().getHeader("CamelFileName", String.class);
+                    String resolvedPath = getContext().resolvePropertyPlaceholders("{{app.output.item-trend-analyzer}}");
+                    String fullPath = resolvedPath + "/" + fileName;
+                    boolean fileExists = Files.exists(Paths.get(fullPath));
+                    exchange.setProperty("fileExisted", fileExists);
+                    logger.debug("Checked file existence for {}: {}", fullPath, fileExists);
+                })
+                .to("file://{{app.output.item-trend-analyzer}}?fileName=${header.CamelFileName}&fileExist=Override")
+                .choice()
+                .when(simple("${exchangeProperty.fileExisted} == true"))
+                .log(LoggingLevel.INFO, "Overwrote file: ${header.CamelFileName}")
+                .when(simple("${exchangeProperty.fileExisted} == false"))
+                .log(LoggingLevel.INFO, "Created new file: ${header.CamelFileName}")
                 .endChoice()
-                .when(body().isNull())
-                .log(LoggingLevel.WARN, "Skipping null trend XML")
+                .endDoTry()
+                .doCatch(Exception.class)
+                .log(LoggingLevel.INFO, "Failed to overwrite trend XML: ${header.CamelFileName}, error: ${exception.message}")
+                .end()
                 .endChoice();
 
         from("direct:writeReviewXml")
                 .routeId("writeReviewXml")
                 .bean("itemProcessor", "prepareReviewXml")
                 .choice()
-                .when(body().isNotNull())
+                .when(simple("${body} != null"))
                 .doTry()
                 .marshal(reviewXmlFormat)
-                .to("file://{{app.output.item-review-aggregator}}?fileExist=Override")
-                .log(LoggingLevel.INFO, "Overwrote review XML: ${header.CamelFileName}")
-                .doCatch(Exception.class)
-                .log(LoggingLevel.ERROR, "Failed to overwrite review XML: ${header.CamelFileName}, error: ${exception.message}")
-                .endDoTry()
+                .setHeader("OutputFolder", constant("review"))
+                .process(exchange -> {
+                    String fileName = exchange.getIn().getHeader("CamelFileName", String.class);
+                    String resolvedPath = getContext().resolvePropertyPlaceholders("{{app.output.item-review-aggregator}}");
+                    String fullPath = resolvedPath + "/" + fileName;
+                    boolean fileExists = Files.exists(Paths.get(fullPath));
+                    exchange.setProperty("fileExisted", fileExists);
+                    logger.debug("Checked file existence for {}: {}", fullPath, fileExists);
+                })
+                .to("file://{{app.output.item-review-aggregator}}?fileName=${header.CamelFileName}&fileExist=Override")
+                .choice()
+                .when(simple("${exchangeProperty.fileExisted} == true"))
+                .log(LoggingLevel.INFO, "Overwrote file: ${header.CamelFileName}")
+                .when(simple("${exchangeProperty.fileExisted} == false"))
+                .log(LoggingLevel.INFO, "Created new file: ${header.CamelFileName}")
                 .endChoice()
-                .when(body().isNull())
-                .log(LoggingLevel.WARN, "Skipping null review XML")
+                .endDoTry()
+                .doCatch(Exception.class)
+                .log(LoggingLevel.INFO, "Failed to overwrite review XML: ${header.CamelFileName}, error: ${exception.message}")
+                .end()
                 .endChoice();
 
         from("direct:writeStoreJson")
                 .routeId("writeStoreJson")
                 .bean("itemProcessor", "prepareStoreJson")
                 .choice()
-                .when(body().isNotNull())
+                .when(simple("${body} != null"))
                 .doTry()
                 .marshal(jsonFormat)
-                .to("file://{{app.output.storefront-app}}?fileExist=Override")
-                .log(LoggingLevel.INFO, "Overwrote store JSON: ${header.CamelFileName}")
-                .doCatch(Exception.class)
-                .log(LoggingLevel.ERROR, "Failed to overwrite store JSON: ${header.CamelFileName}, error: ${exception.message}")
-                .endDoTry()
+                .setHeader("OutputFolder", constant("store"))
+                .process(exchange -> {
+                    String fileName = exchange.getIn().getHeader("CamelFileName", String.class);
+                    String resolvedPath = getContext().resolvePropertyPlaceholders("{{app.output.storefront-app}}");
+                    String fullPath = resolvedPath + "/" + fileName;
+                    boolean fileExists = Files.exists(Paths.get(fullPath));
+                    exchange.setProperty("fileExisted", fileExists);
+                    logger.debug("Checked file existence for {}: {}", fullPath, fileExists);
+                })
+                .to("file://{{app.output.storefront-app}}?fileName=${header.CamelFileName}&fileExist=Override")
+                .choice()
+                .when(simple("${exchangeProperty.fileExisted} == true"))
+                .log(LoggingLevel.INFO, "Overwrote file: ${header.CamelFileName}")
+                .when(simple("${exchangeProperty.fileExisted} == false"))
+                .log(LoggingLevel.INFO, "Created new file: ${header.CamelFileName}")
                 .endChoice()
-                .when(body().isNull())
-                .log(LoggingLevel.WARN, "Skipping null store JSON")
+                .endDoTry()
+                .doCatch(Exception.class)
+                .log(LoggingLevel.INFO, "Failed to overwrite store JSON: ${header.CamelFileName}, error: ${exception.message}")
+                .end()
                 .endChoice();
 
         from("direct:updateControlRef")
                 .routeId("updateControlRef")
+                .log(LoggingLevel.DEBUG, "Starting controlRef update with currentTs: ${exchangeProperty.currentTs}")
                 .bean("controlRefProcessor", "updateControlRef")
                 .choice()
-                .when(body().isNotNull())
+                .when(simple("${body} != null"))
+                .doTry()
                 .to(mongoUri + "&collection={{app.control.collection}}&operation=save")
                 .log(LoggingLevel.INFO, "controlRef updated with lastProcessTs: ${exchangeProperty.currentTs}")
-                .endChoice()
-                .when(body().isNull())
-                .log(LoggingLevel.WARN, "Skipped controlRef update (null body)")
+                .endDoTry()
+                .doCatch(Exception.class)
+                .log(LoggingLevel.ERROR, "Failed to save controlRef to MongoDB: ${exception.message}")
+                .end()
                 .endChoice();
     }
 }

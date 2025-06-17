@@ -13,7 +13,7 @@ import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
-@Component
+@Component("itemProcessor")
 public class ItemProcessor {
 
     private static final Logger logger = LoggerFactory.getLogger(ItemProcessor.class);
@@ -50,6 +50,21 @@ public class ItemProcessor {
 
         exchange.getIn().setBody(query);
         logger.info("Prepared item query: {}", query.toJson());
+    }
+
+    public void validateItemList(Exchange exchange) {
+        Object body = exchange.getIn().getBody();
+        if (body == null) {
+            logger.warn("Item list is null, setting to empty list");
+            exchange.getIn().setBody(new ArrayList<>());
+            return;
+        }
+        if (!(body instanceof List)) {
+            logger.error("Item list is not a List, type: {}, value: {}", body.getClass().getName(), body);
+            exchange.getIn().setBody(new ArrayList<>());
+            return;
+        }
+        logger.debug("Validated item list, size: {}", ((List<?>) body).size());
     }
 
     @SuppressWarnings("unchecked")
@@ -136,6 +151,18 @@ public class ItemProcessor {
         } else {
             logger.warn("Item is null in enrichWithCategory");
             exchange.setProperty("category", new Document("categoryName", "Unknown"));
+        }
+    }
+
+    public void validateCategoryResult(Exchange exchange) {
+        Object body = exchange.getIn().getBody();
+        String itemId = exchange.getProperty("itemId", String.class);
+        if (body == null || !(body instanceof Document)) {
+            logger.warn("Category query result for item {} is null or not a Document, setting default", itemId);
+            exchange.setProperty("category", new Document("categoryName", "Unknown"));
+            exchange.getIn().setBody(new Document("categoryName", "Unknown"));
+        } else {
+            logger.debug("Validated category result for item {}: {}", itemId, ((Document) body).toJson());
         }
     }
 
