@@ -14,9 +14,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-import java.nio.file.Files;
-import java.nio.file.Paths;
-
 @Component
 public class ItemRoute extends RouteBuilder {
     private static final Logger logger = LoggerFactory.getLogger(ItemRoute.class);
@@ -97,14 +94,7 @@ public class ItemRoute extends RouteBuilder {
                 .doTry()
                 .marshal(trendXmlFormat)
                 .setHeader("OutputFolder", constant("trend"))
-                .process(exchange -> {
-                    String fileName = exchange.getIn().getHeader("CamelFileName", String.class);
-                    String resolvedPath = getContext().resolvePropertyPlaceholders("{{app.output.item-trend-analyzer}}");
-                    String fullPath = resolvedPath + "/" + fileName;
-                    boolean fileExists = Files.exists(Paths.get(fullPath));
-                    exchange.setProperty("fileExisted", fileExists);
-                    logger.debug("Checked file existence for {}: {}", fullPath, fileExists);
-                })
+                .bean("itemProcessor", "checkFileExistence")
                 .to("file://{{app.output.item-trend-analyzer}}?fileName=${header.CamelFileName}&fileExist=Override")
                 .choice()
                 .when(simple("${exchangeProperty.fileExisted} == true"))
@@ -126,14 +116,7 @@ public class ItemRoute extends RouteBuilder {
                 .doTry()
                 .marshal(reviewXmlFormat)
                 .setHeader("OutputFolder", constant("review"))
-                .process(exchange -> {
-                    String fileName = exchange.getIn().getHeader("CamelFileName", String.class);
-                    String resolvedPath = getContext().resolvePropertyPlaceholders("{{app.output.item-review-aggregator}}");
-                    String fullPath = resolvedPath + "/" + fileName;
-                    boolean fileExists = Files.exists(Paths.get(fullPath));
-                    exchange.setProperty("fileExisted", fileExists);
-                    logger.debug("Checked file existence for {}: {}", fullPath, fileExists);
-                })
+                .bean("itemProcessor", "checkFileExistence")
                 .to("file://{{app.output.item-review-aggregator}}?fileName=${header.CamelFileName}&fileExist=Override")
                 .choice()
                 .when(simple("${exchangeProperty.fileExisted} == true"))
@@ -155,14 +138,7 @@ public class ItemRoute extends RouteBuilder {
                 .doTry()
                 .marshal(jsonFormat)
                 .setHeader("OutputFolder", constant("store"))
-                .process(exchange -> {
-                    String fileName = exchange.getIn().getHeader("CamelFileName", String.class);
-                    String resolvedPath = getContext().resolvePropertyPlaceholders("{{app.output.storefront-app}}");
-                    String fullPath = resolvedPath + "/" + fileName;
-                    boolean fileExists = Files.exists(Paths.get(fullPath));
-                    exchange.setProperty("fileExisted", fileExists);
-                    logger.debug("Checked file existence for {}: {}", fullPath, fileExists);
-                })
+                .bean("itemProcessor", "checkFileExistence")
                 .to("file://{{app.output.storefront-app}}?fileName=${header.CamelFileName}&fileExist=Override")
                 .choice()
                 .when(simple("${exchangeProperty.fileExisted} == true"))

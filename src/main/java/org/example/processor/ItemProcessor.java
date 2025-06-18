@@ -9,6 +9,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.*;
@@ -313,5 +315,30 @@ public class ItemProcessor {
         exchange.getIn().setHeader("CamelFileName", String.format("review-%s.xml", itemId));
         exchange.getIn().setBody(reviewXml);
         logger.debug("Prepared review XML for item: {}", reviewXml.getItemId());
+    }
+
+    public void checkFileExistence(Exchange exchange) {
+        String fileName = exchange.getIn().getHeader("CamelFileName", String.class);
+        String outputFolder = exchange.getIn().getHeader("OutputFolder", String.class);
+        String propertyKey;
+        switch (outputFolder) {
+            case "trend":
+                propertyKey = "{{app.output.item-trend-analyzer}}";
+                break;
+            case "review":
+                propertyKey = "{{app.output.item-review-aggregator}}";
+                break;
+            case "store":
+                propertyKey = "{{app.output.storefront-app}}";
+                break;
+            default:
+                logger.error("Invalid OutputFolder: {}", outputFolder);
+                throw new IllegalArgumentException("Invalid OutputFolder: " + outputFolder);
+        }
+        String resolvedPath = exchange.getContext().resolvePropertyPlaceholders(propertyKey);
+        String fullPath = resolvedPath + "/" + fileName;
+        boolean fileExists = Files.exists(Paths.get(fullPath));
+        exchange.setProperty("fileExisted", fileExists);
+        logger.debug("Checked file existence for {}: {}", fullPath, fileExists);
     }
 }
